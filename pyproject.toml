@@ -1,0 +1,18 @@
+[project]
+name = "gradescope-homework-agent"
+version = "0.1.0"
+description = "Managed agent that reads Gradescope homework and syncs deadlines to Google Calendar"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "mistralai-agents==1.1.1",
+    "httpx>=0.28",
+    "beautifulsoup4>=4.12",
+]
+
+[tool.mistralai.agents]
+entrypoint = "main:agent"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]

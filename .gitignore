@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.uv-cache/
+uv.lock.tmp

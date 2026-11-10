@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head><title>Student Course Dashboard | Gradescope</title></head>
+  <body>
+    <table id="assignments-student-table">
+      <tbody>
+        <tr>
+          <th><button class="js-submitAssignment" data-assignment-id="701">Reaction Maze-Extra Credit</button></th>
+          <td>No Submission</td>
+        </tr>
+        <tr>
+          <th><button class="js-submitAssignment" data-assignment-id="702">Worksheet Without Template</button></th>
+          <td>No Submission</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <dialog id="submit-fixed-length-modal">
+      <form action="/courses/101/assignments/701/submissions" method="post">
+      </form>
+      <p>
+        Your instructor has provided a PDF to help you complete your assignment.
+        <a
+          class="js-downloadPDFTemplate"
+          target="_blank"
+          href="https://production-gradescope-uploads.s3-us-west-2.amazonaws.com/uploads/pdf_attachment/file/123456/Reaction_Maze_.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Credential=fixture%2F20260815%2Fus-west-2%2Fs3%2Faws4_request&amp;X-Amz-Date=20260815T204847Z&amp;X-Amz-Expires=10800&amp;X-Amz-SignedHeaders=host&amp;X-Amz-Signature=fixture-signature"
+        >Download Reaction Maze-Extra Credit PDF</a>
+      </p>
+    </dialog>
+
+    <dialog id="submit-other-modal">
+      <form action="/courses/101/assignments/702/submissions" method="post">
+        <p>No provided PDF is available for this assignment.</p>
+      </form>
+    </dialog>
+  </body>
+</html>

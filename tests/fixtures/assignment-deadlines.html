@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <body>
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th>Released Due</th></tr></thead>
+      <tbody>
+        <tr><td data-assignment-id="801">Late window</td><td>Submitted late</td><td>
+          <span class="type-body">Late Due Date: <time class="type-body" aria-label="Late Due Date" datetime="2026-09-04T10:00:00-07:00">Sep 4</time></span>
+          <span class="type-body">Due Date: <time class="type-body" aria-label="Due Date" datetime="2026-09-02T10:00:00-07:00">Sep 2</time></span>
+        </td></tr>
+        <tr><td data-assignment-id="802">Before due</td><td>No Submission</td><td><time aria-label="Due Date" datetime="2026-09-05T10:00:00-07:00">Due Date: Sep 5</time></td></tr>
+        <tr><td data-assignment-id="803">Closed by time</td><td>No Submission</td><td>
+          <time class="type-body" aria-label="Due Date" datetime="2026-09-02 10:00:00 -0700">Due Date: Sep 2</time>
+          <time class="type-body" aria-label="Late Due Date" datetime="2026-09-03 11:00:00 -0700">Late Due Date: Sep 3</time>
+        </td></tr>
+        <tr><td data-assignment-id="804">Late only</td><td>No Submission</td><td><time class="type-body" aria-label="Late Due Date" datetime="2026-09-04T10:00:00-07:00">Late Due Date: Sep 4</time></td></tr>
+        <tr><td data-assignment-id="805">Equal deadlines</td><td>No Submission</td><td>
+          <time class="type-body" aria-label="Due Date" datetime="2026-09-02T10:00:00-07:00">Due Date: Sep 2</time>
+          <time class="type-body" aria-label="Late Due Date" datetime="2026-09-02T10:00:00-07:00">Late Due Date: Sep 2</time>
+        </td></tr>
+        <tr><td data-assignment-id="806">Explicit acceptance without parseable date</td><td>No Submission</td><td>Due Date: TBD; Accepting late submissions until further notice</td></tr>
+        <tr><td data-assignment-id="807">Explicitly closed</td><td>No Submission</td><td>
+          <time class="type-body" aria-label="Due Date" datetime="2026-09-05T10:00:00-07:00">Due Date: Sep 5</time>
+          <span>Closed</span>
+        </td></tr>
+        <tr><td data-assignment-id="808">Unparseable date</td><td>No Submission</td><td><time aria-label="Due Date" datetime="Sep 5">Due Date: Sep 5</time></td></tr>
+        <tr><td data-assignment-id="809">Ambiguous date</td><td>No Submission</td><td>Due Date: 09/05/2026</td></tr>
+        <tr><td data-assignment-id="810">Aria-only late date</td><td>No Submission</td><td><time class="type-body" aria-label="Late Due Date" datetime="2026-09-06T10:00:00-07:00">Sep 6</time></td></tr>
+        <tr><td data-assignment-id="813">Release timestamp only</td><td>No Submission</td><td><time class="type-body" aria-label="Release Date" datetime="2026-08-01T10:00:00-07:00">Released at: Aug 1</time></td></tr>
+      </tbody>
+    </table>
+  </body>
+</html>
