@@ -10,15 +10,12 @@ session or the logs; it is read from the environment at call time.
 
 from __future__ import annotations
 
-import asyncio
-import json
-import os
 from typing import Annotated, Any
 
-import httpx
 from pydantic import Field
 
-CONNECTORS_API = "https://api.mistral.ai/v1/connectors"
+from connectors_api import ConnectorError, call_connector_tool
+
 GOOGLE_CALENDAR = "google_calendar"
 CREDENTIALS_NAME = "homework-sync"
 
@@ -27,56 +24,11 @@ class CalendarError(Exception):
     pass
 
 
-_http_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
-
-
-async def _http_client() -> httpx.AsyncClient:
-    """One AsyncClient per event loop, so the many connector calls in a sync
-    reuse keep-alive connections instead of paying a fresh TCP+TLS handshake
-    each time, without leaking a client across loops."""
-    loop = asyncio.get_running_loop()
-    client = _http_clients.get(loop)
-    if client is None or client.is_closed:
-        client = httpx.AsyncClient(timeout=60.0)
-        _http_clients[loop] = client
-    return client
-
-
 async def call_google_calendar(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = (os.environ.get("mistral_calendar_api_key") or os.environ.get("MISTRAL_CALENDAR_API_KEY") or "").strip()
-    if not api_key:
-        raise CalendarError("mistral_calendar_api_key is not configured for this deployment")
-    url = f"{CONNECTORS_API}/{GOOGLE_CALENDAR}/tools/{tool_name}/call"
-    http = await _http_client()
-    response = await http.post(
-        url,
-        params={"credentials_name": CREDENTIALS_NAME},
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"arguments": arguments},
-    )
-    if response.status_code != 200:
-        raise CalendarError(f"google_calendar {tool_name} failed: HTTP {response.status_code} {response.text[:300]}")
-    payload = response.json()
-    metadata = payload.get("metadata") or {}
-    if metadata.get("isError"):
-        text = _content_text(payload.get("content"))
-        raise CalendarError(f"google_calendar {tool_name} returned an error: {text[:500]}")
-    structured = metadata.get("structuredContent") or metadata.get("structured_content")
-    if structured is not None:
-        return structured
-    content = payload.get("content") or []
-    if content and content[0].get("type") == "text":
-        try:
-            return json.loads(content[0]["text"])
-        except (ValueError, TypeError):
-            return content[0]["text"]
-    return payload
-
-
-def _content_text(content: Any) -> str:
-    if isinstance(content, list):
-        return " ".join(block.get("text", "") for block in content if isinstance(block, dict))
-    return str(content)
+    try:
+        return await call_connector_tool(GOOGLE_CALENDAR, tool_name, arguments, CREDENTIALS_NAME)
+    except ConnectorError as error:
+        raise CalendarError(str(error)) from error
 
 
 async def calendar_list_calendars() -> dict[str, Any]:

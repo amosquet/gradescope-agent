@@ -29,6 +29,19 @@ the `google_calendar` connector.
   Existing `[GS]` events are matched by title and only updated when changed —
   runs are idempotent.
 
+## Assignment file export (branch `feature/assignment-file-export`)
+
+`export_assignment_files_to_drive` downloads professor-provided assignment
+files linked on current-term course pages (usually the provided PDF, served
+via Gradescope's time-limited signed S3 URLs) and uploads them to Google Drive
+under a root folder ("Gradescope Assignments") with one subfolder per course.
+Idempotent: files already present in the target folder are skipped, never
+overwritten. Setup: add a Google Drive connection named `homework-sync` in
+Studio next to the calendar one — the worker reaches it through the connectors
+API with `mistral_calendar_api_key`, same as the calendar. Downloads are
+https-only and restricted to gradescope.com and its signed uploads host; the
+Gradescope session cookie is never sent off-origin; files are capped at 100 MB.
+
 ## Deploy
 
 The managed deployment builds this repo's `Dockerfile` from the pushed commit:

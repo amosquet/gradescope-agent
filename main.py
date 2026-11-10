@@ -18,6 +18,7 @@ from typing import Annotated
 from mistralai import agents
 from pydantic import Field
 
+from drive import DriveError
 from gcal import (
     CalendarError,
 )
@@ -38,6 +39,7 @@ from gradescope_client import (
     list_current_student_courses,
     list_student_courses,
 )
+from filesync import export_assignment_files_to_drive as _export_assignment_files_to_drive
 from sync import sync_homework_to_calendar as _sync_homework_to_calendar
 
 INSTRUCTIONS = """You are a homework assistant. You read the user's Gradescope account (read-only) and sync homework assignments to their Google Calendar.
@@ -49,6 +51,8 @@ Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_
 MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run): call sync_homework_to_calendar ONCE and report its summary. It fetches upcoming assignments from all current-term courses and upserts "[GS] <course> - <name> (due)" events (plus "(LATE deadline)" when a distinct late deadline exists) on the primary calendar at the due time in the calendar's time zone, 1h duration, description with the Gradescope link and status. It is idempotent: matches existing [GS] events by exact title, updates only on change, never deletes. Only use the individual list_assignments / calendar_* tools for ad-hoc questions (e.g. "what's due", "list my events"), not for syncing.
 
 When the user asks about courses, deadlines, submissions, scores, or regrade requests, answer from the Gradescope tools and cite assignment URLs. Keep answers short. Never invent data: if a tool returns null or "unknown", say so.
+
+FILE EXPORT — "save/download my assignment files to Drive": call export_assignment_files_to_drive ONCE and report its summary. It downloads professor-provided files linked on current-term course pages (usually the provided PDF) and uploads them to Google Drive under the root folder with one subfolder per course, skipping files already present. It only reads; it never uploads your submissions.
 """
 
 
@@ -58,6 +62,8 @@ async def _run(operation):
     except GradescopeError as error:
         raise agents.ToolError(str(error)) from error
     except CalendarError as error:
+        raise agents.ToolError(str(error)) from error
+    except DriveError as error:
         raise agents.ToolError(str(error)) from error
 
 
@@ -143,6 +149,14 @@ async def sync_homework_to_calendar() -> dict:
 
 
 @agents.tool
+async def export_assignment_files_to_drive(
+    root_folder: Annotated[str, Field(description="Google Drive root folder; one subfolder per course is created inside it.")] = "Gradescope Assignments",
+) -> dict:
+    """One-shot export of professor-provided assignment files: scans current-term Gradescope courses, downloads each linked file (e.g. the provided PDF) and uploads it to Google Drive under the root folder (per-course subfolders). Idempotent: files already in the folder are skipped, never overwritten. Requires the google_drive connection named 'homework-sync'. Call THIS for 'export/save my assignment files to Drive'."""
+    return await _run(_export_assignment_files_to_drive(root_folder))
+
+
+@agents.tool
 async def calendar_list_calendars() -> dict:
     """List the Google calendars available to the connected account, with each calendar's id, summary, and timeZone. Call this first to resolve the target calendar and its time zone."""
     return await _run(_calendar_list_calendars())
@@ -206,6 +220,7 @@ agent = agents.Agent(
     instructions=INSTRUCTIONS,
     tools=[
         sync_homework_to_calendar,
+        export_assignment_files_to_drive,
         list_courses,
         list_assignments,
         list_submissions,

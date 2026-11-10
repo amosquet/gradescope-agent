@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from gradescope_assignments import parse_assignment_list
 from gradescope_courses import parse_dashboard, select_current_courses
 from gradescope_detail import parse_submission_detail
+from gradescope_files import UPLOADS_HOST, is_file_url, parse_assignment_files
 from gradescope_submissions import parse_regrade_requests, parse_submission_list
 
 BASE_URL = "https://www.gradescope.com"
@@ -28,6 +29,7 @@ BASE_ORIGIN = "https://www.gradescope.com"
 USER_AGENT = "GradescopeHomeworkAgent/1.0"
 MAX_REDIRECTS = 5
 MIN_REQUEST_INTERVAL = 1.0
+MAX_FILE_BYTES = 100 * 1024 * 1024
 
 
 class GradescopeError(Exception):
@@ -193,6 +195,46 @@ class GradescopeClient:
             self._csrf_token = new_token
         return html
 
+    def _resolve_file_url(self, url: str) -> tuple[str, bool]:
+        """(url, same_origin) for a file link; https only, gradescope.com or the
+        signed uploads host."""
+        url = url.strip()
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            raise GradescopeError("file downloads must use https")
+        if f"{parsed.scheme}://{parsed.netloc}" == BASE_ORIGIN:
+            return url, True
+        if parsed.netloc == UPLOADS_HOST and is_file_url(url):
+            return url, False
+        raise GradescopeError("file downloads are only allowed from gradescope.com or its signed uploads host")
+
+    async def fetch_bytes(self, url: str, max_bytes: int = MAX_FILE_BYTES) -> tuple[bytes, str]:
+        """Download a file linked from a Gradescope page. The session cookie is
+        only sent to gradescope.com, never to the signed uploads host."""
+        async with self._lock:
+            await self._ensure_authenticated()
+            await self._throttle()
+            target, same_origin = self._resolve_file_url(url)
+            headers = {"Cookie": self._cookie_header()} if same_origin else {}
+            async with self._http.stream("GET", target, headers=headers) as response:
+                if response.status_code in (401, 403):
+                    raise GradescopeError("file download forbidden (the signed link may have expired)")
+                if response.is_redirect:
+                    raise GradescopeError("file download returned a redirect")
+                if not response.is_success:
+                    raise GradescopeError(f"file GET {target} failed ({response.status_code})")
+                content_length = response.headers.get("content-length")
+                if content_length and int(content_length) > max_bytes:
+                    raise GradescopeError(f"file exceeds {max_bytes} bytes")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise GradescopeError(f"file exceeds {max_bytes} bytes")
+                    chunks.append(chunk)
+                return b"".join(chunks), response.headers.get("content-type") or "application/octet-stream"
+
     async def close(self) -> None:
         await self._http.aclose()
 
@@ -260,6 +302,22 @@ async def fetch_course_assignments(course_id: str) -> list[dict[str, Any]]:
 async def list_course_assignments(course_id: str) -> list[dict[str, Any]]:
     await require_student_course(course_id)
     return await fetch_course_assignments(course_id)
+
+
+async def fetch_course_assignments_and_files(course_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """One GET of a course page, returning its assignments and any
+    professor-provided file links found on the same page."""
+    if not re.fullmatch(r"\d+", course_id):
+        raise GradescopeError("course_id must be numeric")
+    client = await get_client()
+    html = await client.fetch_page(f"/courses/{course_id}")
+    return parse_assignment_list(html, course_id), parse_assignment_files(html)
+
+
+async def fetch_assignment_file(url: str) -> tuple[bytes, str]:
+    """Download one assignment file (signed uploads URL or same-origin path)."""
+    client = await get_client()
+    return await client.fetch_bytes(url)
 
 
 async def list_assignment_submissions(course_id: str, assignment_id: str) -> list[dict[str, Any]]:
