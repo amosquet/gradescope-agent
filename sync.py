@@ -158,7 +158,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
     existing = await list_existing_gs_events(calendar_id, window_start, window_end, time_zone)
     existing_by_title = {e.get("summary"): e for e in existing if e.get("summary")}
 
-    created: list[str] = []
+    created: list[dict[str, Any]] = []
     updated: list[str] = []
     skipped = 0
     errors: list[str] = []
@@ -167,7 +167,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
         match = existing_by_title.get(title)
         try:
             if match is None:
-                await call_google_calendar(
+                result = await call_google_calendar(
                     "create_event",
                     {
                         "calendarId": calendar_id,
@@ -177,7 +177,14 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
                         "end": event["end"],
                     },
                 )
-                created.append(title)
+                created.append(
+                    {
+                        "title": title,
+                        "id": result.get("id") if isinstance(result, dict) else None,
+                        "htmlLink": result.get("htmlLink") if isinstance(result, dict) else None,
+                        "start": result.get("start") if isinstance(result, dict) else None,
+                    }
+                )
             else:
                 changed = (
                     (match.get("start") or {}).get("dateTime") != (event["start"].get("dateTime"))
@@ -205,6 +212,10 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
     return {
         "calendar": primary.get("summary") or calendar_id,
         "calendar_id": calendar_id,
+        "calendars_seen": [
+            {"id": c.get("id"), "summary": c.get("summary"), "primary": c.get("primary"), "accessRole": c.get("accessRole")}
+            for c in calendar_list
+        ],
         "existing_gs_events": sorted(existing_by_title.keys()),
         "courses_scanned": [c.get("short_name") or c.get("name") for c in assignments_by_course],
         "assignments_upcoming": sum(
