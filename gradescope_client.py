@@ -200,6 +200,11 @@ class GradescopeClient:
 _client: GradescopeClient | None = None
 _client_lock = asyncio.Lock()
 
+# The /account page backs every require_student_course validation; cache it
+# briefly so a burst of tool calls (or a sync) doesn't re-fetch it per call.
+COURSE_LIST_CACHE_TTL = 60.0
+_course_list_cache: tuple[float, list[dict[str, Any]]] | None = None
+
 
 async def get_client() -> GradescopeClient:
     global _client
@@ -216,9 +221,14 @@ async def get_client() -> GradescopeClient:
 
 
 async def list_student_courses() -> list[dict[str, Any]]:
+    global _course_list_cache
+    now = time.monotonic()
+    if _course_list_cache is not None and now - _course_list_cache[0] < COURSE_LIST_CACHE_TTL:
+        return _course_list_cache[1]
     client = await get_client()
-    courses = parse_dashboard(await client.fetch_page("/account"))
-    return [course for course in courses if course["role"] == "student"]
+    courses = [course for course in parse_dashboard(await client.fetch_page("/account")) if course["role"] == "student"]
+    _course_list_cache = (now, courses)
+    return courses
 
 
 async def list_current_student_courses() -> list[dict[str, Any]]:

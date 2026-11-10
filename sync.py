@@ -166,13 +166,8 @@ async def list_existing_gs_events(calendar_id: str | None, window_start: str, wi
 
 async def sync_homework_to_calendar() -> dict[str, Any]:
     """Fetch upcoming Gradescope assignments (current-term courses) and sync [GS] events to the primary Google Calendar. Idempotent: matches by exact event title, updates only on change, never deletes."""
-    calendars = await call_google_calendar("list_calendars", {})
-    calendar_list = calendars.get("calendars") or []
-    primary = pick_primary_calendar(calendar_list)
-    if primary is None:
-        raise GradescopeError("No Google Calendar found for the connected account")
-    calendar_id = primary.get("id")
-    time_zone = primary.get("timeZone")
+    # The calendar list and the Gradescope scan are independent; overlap them.
+    calendars_task = asyncio.create_task(call_google_calendar("list_calendars", {}))
 
     courses = await list_current_student_courses()
 
@@ -183,6 +178,14 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
 
     assignments_by_course = list(await asyncio.gather(*(with_assignments(course) for course in courses)))
 
+    calendars = await calendars_task
+    calendar_list = calendars.get("calendars") or []
+    primary = pick_primary_calendar(calendar_list)
+    if primary is None:
+        raise GradescopeError("No Google Calendar found for the connected account")
+    calendar_id = primary.get("id")
+    time_zone = primary.get("timeZone")
+
     desired = plan_events(assignments_by_course, time_zone)
     now = datetime.now().astimezone()
     window_start = (now - timedelta(days=30)).isoformat()
@@ -190,50 +193,61 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
     existing = await list_existing_gs_events(calendar_id, window_start, window_end, time_zone)
     existing_by_title = {e.get("summary"): e for e in existing if e.get("summary")}
 
+    async def apply_event(event: dict[str, Any], match: dict[str, Any] | None) -> tuple[str, Any]:
+        title = event["summary"]
+        if match is None:
+            result = await call_google_calendar(
+                "create_event",
+                {
+                    "calendarId": calendar_id,
+                    "summary": title,
+                    "description": event["description"],
+                    **event["times"],
+                },
+            )
+            return (
+                "created",
+                {
+                    "title": title,
+                    "id": result.get("id") if isinstance(result, dict) else None,
+                    "htmlLink": result.get("htmlLink") if isinstance(result, dict) else None,
+                    "start": result.get("start") if isinstance(result, dict) else None,
+                },
+            )
+        changed = existing_start_key(match) != event["start_key"] or (match.get("description") or "") != event["description"]
+        if changed:
+            await call_google_calendar(
+                "update_event",
+                {
+                    "calendarId": calendar_id,
+                    "eventId": match["id"],
+                    "summary": title,
+                    "description": event["description"],
+                    **event["times"],
+                },
+            )
+            return ("updated", title)
+        return ("skipped", None)
+
+    # Writes are independent per event; issue them concurrently and report
+    # per-event failures without aborting the rest of the sync.
+    outcomes = await asyncio.gather(
+        *(apply_event(event, existing_by_title.get(event["summary"])) for event in desired),
+        return_exceptions=True,
+    )
     created: list[dict[str, Any]] = []
     updated: list[str] = []
     skipped = 0
     errors: list[str] = []
-    for event in desired:
-        title = event["summary"]
-        match = existing_by_title.get(title)
-        try:
-            if match is None:
-                result = await call_google_calendar(
-                    "create_event",
-                    {
-                        "calendarId": calendar_id,
-                        "summary": title,
-                        "description": event["description"],
-                        **event["times"],
-                    },
-                )
-                created.append(
-                    {
-                        "title": title,
-                        "id": result.get("id") if isinstance(result, dict) else None,
-                        "htmlLink": result.get("htmlLink") if isinstance(result, dict) else None,
-                        "start": result.get("start") if isinstance(result, dict) else None,
-                    }
-                )
-            else:
-                changed = existing_start_key(match) != event["start_key"] or (match.get("description") or "") != event["description"]
-                if changed:
-                    await call_google_calendar(
-                        "update_event",
-                        {
-                            "calendarId": calendar_id,
-                            "eventId": match["id"],
-                            "summary": title,
-                            "description": event["description"],
-                            **event["times"],
-                        },
-                    )
-                    updated.append(title)
-                else:
-                    skipped += 1
-        except Exception as error:  # noqa: BLE001 - report per-event, keep syncing
-            errors.append(f"{title}: {error}")
+    for event, outcome in zip(desired, outcomes):
+        if isinstance(outcome, BaseException):
+            errors.append(f"{event['summary']}: {outcome}")
+        elif outcome[0] == "created":
+            created.append(outcome[1])
+        elif outcome[0] == "updated":
+            updated.append(outcome[1])
+        else:
+            skipped += 1
 
     return {
         "calendar": primary.get("summary") or calendar_id,
