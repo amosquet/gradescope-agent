@@ -5,7 +5,8 @@ your Gradescope account — the same read-only student surface as
 [bruglet/gradescope-mcp](https://github.com/bruglet/gradescope-mcp):
 `list_courses`, `list_assignments`, `list_submissions`, `get_submission`,
 `list_regrade_requests` — and syncs homework deadlines to Google Calendar via
-the `google_calendar` connector.
+the `google_calendar` connector, and can export professor-provided assignment
+files to Google Drive via the `google_drive` connector.
 
 ## How it works
 
@@ -16,7 +17,9 @@ the `google_calendar` connector.
   `gradescope_courses.py`, `gradescope_assignments.py`,
   `gradescope_submissions.py`, `gradescope_detail.py`.
 - `main.py` defines the `gradescope-homework-sync` agent: five read-only
-  Gradescope tools plus five Google Calendar tools (`gcal.py`). Calendar writes
+  Gradescope tools, five Google Calendar tools (`gcal.py`), and two one-shot
+  tools — `sync_homework_to_calendar` (`sync.py`) and
+  `export_assignment_files_to_drive` (`filesync.py`, `drive.py`). Calendar writes
   go through the connectors API
   (`POST /v1/connectors/google_calendar/tools/<tool>/call?credentials_name=homework-sync`)
   authenticated with a Mistral API key of the connector owner, because the
@@ -24,23 +27,29 @@ the `google_calendar` connector.
   workspace secrets are bound at deploy time: `gradescope_email`,
   `gradescope_password`, `mistral_calendar_api_key`.
 - Sync behavior: for every released assignment with a due date, one event
-  `[GS] <course> - <assignment> (due)` at the due time (all-day if timeless),
-  plus a `(LATE deadline)` event when a distinct late deadline exists.
-  Existing `[GS]` events are matched by title and only updated when changed —
-  runs are idempotent.
+  `[GS] <course> - <assignment> (due)` as a 1h block ending at the due time in
+  the calendar's time zone (all-day if timeless), so a 23:59 due stays on the
+  same day, plus a `(LATE deadline)` event when a distinct late deadline
+  exists. Existing `[GS]` events are matched by title and only updated when
+  changed — runs are idempotent.
 
-## Assignment file export (branch `feature/assignment-file-export`)
+## Assignment file export
 
-`export_assignment_files_to_drive` downloads professor-provided assignment
-files linked on current-term course pages (usually the provided PDF, served
+`export_assignment_files_to_drive` runs on request only — it is not part of
+the daily scheduled sync. It downloads professor-provided assignment files
+linked on current-term course pages (usually the provided PDF, served
 via Gradescope's time-limited signed S3 URLs) and uploads them to Google Drive
-under a root folder ("Gradescope Assignments") with one subfolder per course.
-Idempotent: files already present in the target folder are skipped, never
-overwritten. Setup: add a Google Drive connection named `homework-sync` in
-Studio next to the calendar one — the worker reaches it through the connectors
-API with `mistral_calendar_api_key`, same as the calendar. Downloads are
-https-only and restricted to gradescope.com and its signed uploads host; the
-Gradescope session cookie is never sent off-origin; files are capped at 100 MB.
+under a root folder (default "Gradescope Assignments", configurable via the
+tool's `root_folder` argument; created if missing) with one subfolder per
+course, named by the course short name and also created if missing. Original
+file names are kept, except that characters outside `[A-Za-z0-9._-]` are
+replaced with `_`. Idempotent: files already present in the target folder
+(matched by name) are skipped, never overwritten. Setup: add a Google Drive
+connection named `homework-sync` in Studio next to the calendar one — the
+worker reaches it through the connectors API with `mistral_calendar_api_key`,
+same as the calendar. Downloads are https-only and restricted to gradescope.com
+and its signed uploads host; the Gradescope session cookie is never sent
+off-origin; files are capped at 100 MB.
 
 ## Deploy
 
@@ -51,7 +60,8 @@ The managed deployment builds this repo's `Dockerfile` from the pushed commit:
   the `homework-sync` Google Calendar connection; connector access scope
   "Private and shared connectors").
 - Studio → Connectors → Google Calendar → Credentials: a user connection named
-  `homework-sync`.
+  `homework-sync`. Add a Google Drive connection with the same name for the
+  file export.
 - Deployment → Settings tab: bind the three secrets to env vars of the same
   name, then deploy with the Mistral MCP `deploy_workflow_deployment` (or
   `uv run --env-file .env agents deploy`).
