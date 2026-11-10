@@ -46,14 +46,14 @@ Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_
 
 MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run):
 1. Call calendar_list_calendars and use the primary calendar unless the user names another; note its timeZone.
-2. Call list_assignments with no course_id to get every assignment in every CURRENT-TERM course (past terms are excluded automatically) — due dates, late due dates, deadline status, submission status, scores, URLs.
+2. Call list_assignments with no course_id to get every UPCOMING assignment in every CURRENT-TERM course (past terms and closed/past-deadline assignments are excluded automatically) — due dates, late due dates, deadline status, submission status, scores, URLs.
 3. For each released assignment with a due date, ensure a calendar event exists:
    - Title: "[GS] {course short name} - {assignment name} (due)"
    - Start: the regular due date/time expressed in the calendar's timeZone (use due_date_iso when it carries an offset; if it is naive, treat it as calendar-local). Duration 1 hour. If the due date has no time component, create an all-day event on that date instead.
    - Description: the assignment URL, course name, deadline_status, submission_status, score if any, and the late due date if it differs from the due date.
    - If a late due date exists and differs from the due date, also ensure a second event titled "[GS] {course short name} - {assignment name} (LATE deadline)" at the late due time.
 4. Idempotency: before creating anything, call calendar_list_events on the target calendar with full_text "[GS]" and a start_time/end_time window wide enough to cover all assignment due dates (paginate with page_token if needed). Match existing events by exact summary (title). If an event with the same title exists, call calendar_update_event only when the start time or description actually changed; otherwise skip. Never delete events unless the user explicitly asks.
-5. Assignments without a due date are skipped. End with a concise summary: courses scanned, assignments found, events created / updated / skipped, and any errors encountered.
+5. Assignments without a due date are skipped; the all-courses list_assignments call already returns only upcoming assignments (closed/past deadlines are dropped), so only upcoming homework gets events. End with a concise summary: courses scanned, assignments found, events created / updated / skipped, and any errors encountered.
 
 When the user asks about courses, deadlines, submissions, scores, or regrade requests, answer from the Gradescope tools and cite assignment URLs. Keep answers short. Never invent data: if a tool returns null or "unknown", say so.
 """
@@ -93,14 +93,18 @@ async def list_assignments(
         Field(description="Numeric Gradescope course ID from list_courses. Omit to list assignments for ALL courses at once."),
     ] = None,
 ) -> dict:
-    """List Gradescope assignments with regular and late deadlines (raw and ISO), deadline status, submission status, timestamps, lateness, scores, release state, and URLs. Omit course_id to scan every CURRENT-TERM course (past terms are excluded); pass one to scan a single course."""
+    """List Gradescope assignments with regular and late deadlines (raw and ISO), deadline status, submission status, timestamps, lateness, scores, release state, and URLs. Omit course_id to scan every CURRENT-TERM course (past terms are excluded) and only UPCOMING assignments (deadline_status before_due or accepting_late; closed/past ones are dropped); pass one to scan a single course with all its assignments."""
     if course_id:
         courses = [{"id": course_id, "short_name": None, "name": None}]
+        upcoming_only = False
     else:
         courses = await _run(list_current_student_courses())
+        upcoming_only = True
     result = []
     for course in courses:
         assignments = await _run(list_course_assignments(course["id"]))
+        if upcoming_only:
+            assignments = [a for a in assignments if a["deadline_status"] in ("before_due", "accepting_late")]
         result.append({"course_id": course["id"], "short_name": course.get("short_name"), "assignments": assignments})
     return {"courses": result}
 
