@@ -41,9 +41,9 @@ def test_plan_events_due_and_late():
         "[GS] ECE 302 - HW 9 (due)",
     ]
     due = events[0]
-    assert due["times"]["startTime"] == "2026-11-13T23:59:00-05:00"
+    assert due["times"]["startTime"] == "2026-11-13T22:59:00-05:00"
     assert due["times"]["timeZone"] == "America/Indiana/Indianapolis"
-    assert due["times"]["endTime"] == "2026-11-14T00:59:00-05:00"
+    assert due["times"]["endTime"] == "2026-11-13T23:59:00-05:00"
     assert "https://www.gradescope.com/courses/1/assignments/10" in due["description"]
 
 
@@ -66,23 +66,27 @@ def test_event_time_all_day_and_naive():
         "startTime": "2026-11-13T00:00:00Z",
         "endTime": "2026-11-14T00:00:00Z",
     }
-    # naive timestamp -> flat strings + timeZone
+    # naive timestamp -> flat strings + timeZone; block ends at the due time
     naive = event_time("2026-11-13T23:59:00", "America/Indiana/Indianapolis")
     assert naive == {
-        "startTime": "2026-11-13T23:59:00",
-        "endTime": "2026-11-14T00:59:00",
+        "startTime": "2026-11-13T22:59:00",
+        "endTime": "2026-11-13T23:59:00",
         "timeZone": "America/Indiana/Indianapolis",
     }
     # offset-aware timestamp
     offset = event_time("2026-11-13T23:59:00-05:00", None)
-    assert offset == {"startTime": "2026-11-13T23:59:00-05:00", "endTime": "2026-11-14T00:59:00-05:00"}
+    assert offset == {"startTime": "2026-11-13T22:59:00-05:00", "endTime": "2026-11-13T23:59:00-05:00"}
+    # a due in the first hour of the day clamps the start to midnight
+    # instead of reaching back into the previous evening
+    early = event_time("2026-11-13T00:30:00-05:00", None)
+    assert early == {"startTime": "2026-11-13T00:00:00-05:00", "endTime": "2026-11-13T00:30:00-05:00"}
     assert event_time(None, None) is None
 
 
 def test_start_key_matches_google_event_shape():
     # naive planned time in the calendar tz must equal the stored offset form
     times = event_time("2026-11-13T23:59:00", "America/Indiana/Indianapolis")
-    existing = {"start": {"dateTime": "2026-11-13T23:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"}}
+    existing = {"start": {"dateTime": "2026-11-13T22:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"}}
     assert desired_start_key(times, "America/Indiana/Indianapolis") == existing_start_key(existing)
     # all-day planned event must equal the stored date form
     allday = event_time("2026-11-13", None)
@@ -148,7 +152,8 @@ def test_sync_sends_connector_shaped_create_args(monkeypatch):
         assert "start" not in args and "end" not in args
         assert args["calendarId"] == "me@example.com"
     by_title = {args["summary"]: args for args in creates}
-    assert by_title["[GS] CS 251 - HW 8 (due)"]["startTime"] == "2026-11-13T23:59:00-05:00"
+    assert by_title["[GS] CS 251 - HW 8 (due)"]["startTime"] == "2026-11-13T22:59:00-05:00"
+    assert by_title["[GS] CS 251 - HW 8 (due)"]["endTime"] == "2026-11-13T23:59:00-05:00"
     assert by_title["[GS] CS 251 - HW 8 (due)"]["timeZone"] == "America/Indiana/Indianapolis"
     allday = by_title["[GS] CS 251 - HW 9 (due)"]
     assert allday["allDay"] is True
@@ -174,7 +179,7 @@ def test_sync_updates_instead_of_recreating(monkeypatch):
         "id": "evt-existing",
         "summary": "[GS] CS 251 - HW 8 (due)",
         "description": "old",
-        "start": {"dateTime": "2026-11-13T23:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"},
+        "start": {"dateTime": "2026-11-13T22:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"},
     }
     calls = []
 
@@ -196,6 +201,6 @@ def test_sync_updates_instead_of_recreating(monkeypatch):
     assert not creates
     assert len(updates) == 1  # description differs -> update, same instant
     assert updates[0]["eventId"] == "evt-existing"
-    assert updates[0]["startTime"] == "2026-11-13T23:59:00"
-    assert updates[0]["endTime"] == "2026-11-14T00:59:00"
+    assert updates[0]["startTime"] == "2026-11-13T22:59:00"
+    assert updates[0]["endTime"] == "2026-11-13T23:59:00"
     assert summary["events_updated"] == ["[GS] CS 251 - HW 8 (due)"]

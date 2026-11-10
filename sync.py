@@ -20,6 +20,7 @@ from gradescope_client import (
 
 EVENT_PREFIX = "[GS]"
 UPCOMING_STATUSES = ("before_due", "accepting_late")
+EVENT_DURATION = timedelta(hours=1)
 
 
 GROUP_CALENDAR_SUFFIXES = (
@@ -67,7 +68,10 @@ def event_description(course_name: str | None, assignment: dict[str, Any]) -> st
 
 def event_time(iso: str | None, time_zone: str | None) -> dict[str, Any] | None:
     """Connector-shaped time arguments for a due timestamp: flat startTime/
-    endTime ISO strings with a 1h duration; all-day (midnight UTC) if date-only.
+    endTime ISO strings. The block ENDS at the due time (the deadline is the end
+    of the work window, so a 23:59 due stays on the same day); a due in the
+    first hour of the day starts at midnight instead of the prior evening.
+    All-day (midnight UTC) if date-only.
 
     The google_calendar connector's create_event/update_event take top-level
     startTime/endTime strings (plus optional timeZone / allDay), not Google's
@@ -76,8 +80,11 @@ def event_time(iso: str | None, time_zone: str | None) -> dict[str, Any] | None:
     if not iso:
         return None
     if "T" in iso:
-        begin = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        times: dict[str, Any] = {"startTime": iso, "endTime": (begin + timedelta(hours=1)).isoformat()}
+        due = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        begin = due - EVENT_DURATION
+        if begin.date() != due.date():
+            begin = due.replace(hour=0, minute=0, second=0, microsecond=0)
+        times: dict[str, Any] = {"startTime": begin.isoformat(), "endTime": iso}
         if time_zone:
             times["timeZone"] = time_zone
         return times
