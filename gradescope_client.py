@@ -19,7 +19,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from gradescope_assignments import parse_assignment_list
-from gradescope_courses import parse_dashboard
+from gradescope_courses import parse_dashboard, select_current_courses
 from gradescope_detail import parse_submission_detail
 from gradescope_submissions import parse_regrade_requests, parse_submission_list
 
@@ -219,6 +219,11 @@ async def list_student_courses() -> list[dict[str, Any]]:
     client = await get_client()
     courses = parse_dashboard(await client.fetch_page("/account"))
     return [course for course in courses if course["role"] == "student"]
+
+
+async def list_current_student_courses() -> list[dict[str, Any]]:
+    """Student courses in the current term (latest term as fallback)."""
+    return select_current_courses(await list_student_courses())
 
 
 async def require_student_course(course_id: str) -> dict[str, Any]:

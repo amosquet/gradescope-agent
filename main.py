@@ -34,6 +34,7 @@ from gradescope_client import (
     list_assignment_regrade_requests,
     list_assignment_submissions,
     list_course_assignments,
+    list_current_student_courses,
     list_student_courses,
 )
 
@@ -45,7 +46,7 @@ Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_
 
 MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run):
 1. Call calendar_list_calendars and use the primary calendar unless the user names another; note its timeZone.
-2. Call list_assignments with no course_id to get every assignment in every student course (due dates, late due dates, deadline status, submission status, scores, URLs).
+2. Call list_assignments with no course_id to get every assignment in every CURRENT-TERM course (past terms are excluded automatically) — due dates, late due dates, deadline status, submission status, scores, URLs.
 3. For each released assignment with a due date, ensure a calendar event exists:
    - Title: "[GS] {course short name} - {assignment name} (due)"
    - Start: the regular due date/time expressed in the calendar's timeZone (use due_date_iso when it carries an offset; if it is naive, treat it as calendar-local). Duration 1 hour. If the due date has no time component, create an all-day event on that date instead.
@@ -92,11 +93,11 @@ async def list_assignments(
         Field(description="Numeric Gradescope course ID from list_courses. Omit to list assignments for ALL courses at once."),
     ] = None,
 ) -> dict:
-    """List Gradescope assignments with regular and late deadlines (raw and ISO), deadline status, submission status, timestamps, lateness, scores, release state, and URLs. Omit course_id to scan every course; pass one to scan a single course."""
+    """List Gradescope assignments with regular and late deadlines (raw and ISO), deadline status, submission status, timestamps, lateness, scores, release state, and URLs. Omit course_id to scan every CURRENT-TERM course (past terms are excluded); pass one to scan a single course."""
     if course_id:
         courses = [{"id": course_id, "short_name": None, "name": None}]
     else:
-        courses = await _run(list_student_courses())
+        courses = await _run(list_current_student_courses())
     result = []
     for course in courses:
         assignments = await _run(list_course_assignments(course["id"]))

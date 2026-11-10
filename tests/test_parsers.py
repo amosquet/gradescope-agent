@@ -201,3 +201,22 @@ def test_deadline_to_iso():
     assert deadline_to_iso("Aug 25, 2026 at 11:59 PM") == "2026-08-25T23:59:00"
     assert deadline_to_iso("TBD") is None
     assert deadline_to_iso(None) is None
+
+
+def test_select_current_courses():
+    from datetime import datetime
+
+    from gradescope_courses import select_current_courses
+
+    courses = [
+        {"id": "1", "term": "Fall 2023"},
+        {"id": "2", "term": "Spring 2026"},
+        {"id": "3", "term": "Fall 2026"},
+        {"id": "4", "term": "Fall 2026"},
+        {"id": "5", "term": None},
+    ]
+    now = datetime(2026, 11, 10)  # Fall 2026
+    assert [c["id"] for c in select_current_courses(courses, now)] == ["3", "4"]
+    # Fallback to latest term when the current term has no courses
+    now2 = datetime(2027, 2, 1)  # Spring 2027, not present
+    assert [c["id"] for c in select_current_courses(courses, now2)] == ["3", "4"]

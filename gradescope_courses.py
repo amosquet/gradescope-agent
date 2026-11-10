@@ -3,11 +3,52 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 
 from gradescope_parsers import nullable_text, text_content
+
+SEASON_ORDER = {"spring": 1, "summer": 2, "fall": 3, "winter": 4}
+
+
+def parse_term(term: str | None) -> tuple[int, int] | None:
+    """Parse a term label like 'Fall 2026' into (year, season_order)."""
+    if not term:
+        return None
+    match = re.search(r"(spring|summer|fall|winter)[\s,]*(\d{4})", term, re.I)
+    if match:
+        return int(match.group(2)), SEASON_ORDER[match.group(1).lower()]
+    match = re.search(r"(\d{4})[\s,]*(spring|summer|fall|winter)", term, re.I)
+    if match:
+        return int(match.group(1)), SEASON_ORDER[match.group(2).lower()]
+    year = re.search(r"\d{4}", term)
+    if year:
+        return int(year.group(0)), 0
+    return None
+
+
+def current_term_key(now: datetime | None = None) -> tuple[int, int]:
+    now = now or datetime.now()
+    if now.month >= 8:
+        return now.year, SEASON_ORDER["fall"]
+    if now.month >= 5:
+        return now.year, SEASON_ORDER["summer"]
+    return now.year, SEASON_ORDER["spring"]
+
+
+def select_current_courses(courses: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
+    """Keep only courses in the current term; fall back to the latest term seen."""
+    current = current_term_key(now)
+    matching = [c for c in courses if parse_term(c.get("term")) == current]
+    if matching:
+        return matching
+    keyed = [(parse_term(c.get("term")) or (0, 0), c) for c in courses]
+    if not keyed:
+        return []
+    latest = max(key for key, _ in keyed)
+    return [c for key, c in keyed if key == latest]
 
 
 def role_from_heading(value: str) -> str:
