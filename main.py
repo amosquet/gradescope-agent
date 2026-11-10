@@ -30,6 +30,7 @@ from gcal import (
 )
 from gradescope_client import (
     GradescopeError,
+    fetch_course_assignments,
     get_submission_detail,
     list_assignment_regrade_requests,
     list_assignment_submissions,
@@ -43,7 +44,7 @@ INSTRUCTIONS = """You are a homework assistant. You read the user's Gradescope a
 
 Gradescope tools (read-only, called as client.*): list_courses, list_assignments, list_submissions, get_submission, list_regrade_requests. Credentials come from the gradescope_email / gradescope_password environment variables (managed secrets); never ask the user for them and never print them. Never modify anything in Gradescope.
 
-Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_list_events, calendar_get_event, calendar_create_event, calendar_update_event. They write to the primary Google Calendar unless a calendar_id is given. Time fields use {\"dateTime\": ISO 8601 with offset, \"timeZone\": IANA name} or {\"date\": \"YYYY-MM-DD\"} for all-day events.
+Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_list_events, calendar_get_event, calendar_create_event, calendar_update_event. They write to the primary Google Calendar unless a calendar_id is given. Time fields are flat ISO 8601 strings: start_time / end_time (e.g. \"2026-11-13T23:59:00-05:00\"), with optional time_zone (IANA name, also resolves timezone-less times) and all_day=true with midnight-UTC start/end (e.g. \"2026-11-20T00:00:00Z\") for all-day events.
 
 MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run): call sync_homework_to_calendar ONCE and report its summary. It fetches upcoming assignments from all current-term courses and upserts "[GS] <course> - <name> (due)" events (plus "(LATE deadline)" when a distinct late deadline exists) on the primary calendar at the due time in the calendar's time zone, 1h duration, description with the Gradescope link and status. It is idempotent: matches existing [GS] events by exact title, updates only on change, never deletes. Only use the individual list_assignments / calendar_* tools for ad-hoc questions (e.g. "what's due", "list my events"), not for syncing.
 
@@ -94,7 +95,10 @@ async def list_assignments(
         upcoming_only = True
     result = []
     for course in courses:
-        assignments = await _run(list_course_assignments(course["id"]))
+        # In all-courses mode the course list already came from the student
+        # dashboard, so skip the per-course /account re-validation.
+        fetch = list_course_assignments if course_id else fetch_course_assignments
+        assignments = await _run(fetch(course["id"]))
         if upcoming_only:
             assignments = [a for a in assignments if a["deadline_status"] in ("before_due", "accepting_late")]
         result.append({"course_id": course["id"], "short_name": course.get("short_name"), "assignments": assignments})
@@ -169,13 +173,15 @@ async def calendar_get_event(
 @agents.tool
 async def calendar_create_event(
     summary: Annotated[str, Field(description="Event title, e.g. \"[GS] CS 251 - HW5 (due)\".")],
-    start: Annotated[dict, Field(description="Start: {\"dateTime\": ISO 8601 with offset, \"timeZone\": IANA name} or {\"date\": \"YYYY-MM-DD\"} for all-day.")],
-    end: Annotated[dict, Field(description="End, same shape as start (exclusive).")],
+    start_time: Annotated[str, Field(description="Start as an ISO 8601 string, e.g. 2026-11-13T23:59:00-05:00 (offset optional when time_zone is given); midnight UTC (2026-11-20T00:00:00Z) when all_day.")],
+    end_time: Annotated[str, Field(description="End (exclusive) as an ISO 8601 string, same rules as start_time.")],
     description: Annotated[str | None, Field(description="Event description; include the Gradescope assignment URL.")] = None,
     calendar_id: Annotated[str | None, Field(description="Exact calendar ID. Omit for the primary calendar.")] = None,
+    time_zone: Annotated[str | None, Field(description="IANA time zone, e.g. America/Indiana/Indianapolis; also resolves timezone-less start/end times.")] = None,
+    all_day: Annotated[bool, Field(description="All-day event; then start_time/end_time must be midnight UTC.")] = False,
 ) -> dict:
     """Create a Google Calendar event on the primary calendar (or the given calendar_id)."""
-    return await _run(_calendar_create_event(summary=summary, start=start, end=end, description=description, calendar_id=calendar_id))
+    return await _run(_calendar_create_event(summary=summary, start_time=start_time, end_time=end_time, description=description, calendar_id=calendar_id, time_zone=time_zone, all_day=all_day))
 
 
 @agents.tool
@@ -183,12 +189,14 @@ async def calendar_update_event(
     event_id: Annotated[str, Field(description="Exact event id to update.")],
     summary: Annotated[str | None, Field(description="New title. Only provided fields are changed.")] = None,
     description: Annotated[str | None, Field(description="New description.")] = None,
-    start: Annotated[dict | None, Field(description="New start: {\"dateTime\": ..., \"timeZone\": ...} or {\"date\": ...}.")] = None,
-    end: Annotated[dict | None, Field(description="New end, same shape as start.")] = None,
+    start_time: Annotated[str | None, Field(description="New start as an ISO 8601 string, e.g. 2026-11-13T23:59:00-05:00.")] = None,
+    end_time: Annotated[str | None, Field(description="New end (exclusive) as an ISO 8601 string. If omitted, the end moves with the start so the duration is kept.")] = None,
+    time_zone: Annotated[str | None, Field(description="IANA time zone for the new start/end.")] = None,
+    all_day: Annotated[bool | None, Field(description="Set to true to make the event all-day (start_time/end_time must then be midnight UTC).")] = None,
     calendar_id: Annotated[str | None, Field(description="Calendar ID that located the event. Omit for the primary calendar.")] = None,
 ) -> dict:
     """Update an existing Google Calendar event. Only provided fields are changed."""
-    return await _run(_calendar_update_event(event_id=event_id, summary=summary, description=description, start=start, end=end, calendar_id=calendar_id))
+    return await _run(_calendar_update_event(event_id=event_id, summary=summary, description=description, start_time=start_time, end_time=end_time, time_zone=time_zone, all_day=all_day, calendar_id=calendar_id))
 
 
 agent = agents.Agent(

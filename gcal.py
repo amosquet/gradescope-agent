@@ -109,17 +109,23 @@ async def calendar_get_event(
 
 async def calendar_create_event(
     summary: Annotated[str, Field(description="Event title, e.g. \"[GS] CS 251 - HW5 (due)\".")],
-    start: Annotated[dict[str, Any], Field(description="Start: {\"dateTime\": ISO 8601 with offset, \"timeZone\": IANA name} or {\"date\": \"YYYY-MM-DD\"} for all-day.")],
-    end: Annotated[dict[str, Any], Field(description="End, same shape as start (exclusive).")],
+    start_time: Annotated[str, Field(description="Start as an ISO 8601 string, e.g. 2026-11-13T23:59:00-05:00 (offset optional when time_zone is set). For all-day events pass midnight UTC, e.g. 2026-11-20T00:00:00Z.")],
+    end_time: Annotated[str, Field(description="End (exclusive) as an ISO 8601 string, same rules as start_time.")],
     description: Annotated[str | None, Field(description="Event description; include the Gradescope assignment URL.")] = None,
     calendar_id: Annotated[str | None, Field(description="Exact calendar ID. Omit for the primary calendar.")] = None,
+    time_zone: Annotated[str | None, Field(description="IANA time zone, e.g. America/Indiana/Indianapolis; also resolves timezone-less start/end times.")] = None,
+    all_day: Annotated[bool, Field(description="All-day event; then start_time/end_time must be midnight UTC.")] = False,
 ) -> dict[str, Any]:
     """Create a Google Calendar event."""
-    arguments: dict[str, Any] = {"summary": summary, "start": start, "end": end}
+    arguments: dict[str, Any] = {"summary": summary, "startTime": start_time, "endTime": end_time}
     if description:
         arguments["description"] = description
     if calendar_id:
         arguments["calendarId"] = calendar_id
+    if time_zone:
+        arguments["timeZone"] = time_zone
+    if all_day:
+        arguments["allDay"] = True
     return await call_google_calendar("create_event", arguments)
 
 
@@ -127,8 +133,10 @@ async def calendar_update_event(
     event_id: Annotated[str, Field(description="Exact event id to update.")],
     summary: Annotated[str | None, Field(description="New title. Only fields provided are changed.")] = None,
     description: Annotated[str | None, Field(description="New description.")] = None,
-    start: Annotated[dict[str, Any] | None, Field(description="New start: {\"dateTime\": ..., \"timeZone\": ...} or {\"date\": ...}.")] = None,
-    end: Annotated[dict[str, Any] | None, Field(description="New end, same shape as start.")] = None,
+    start_time: Annotated[str | None, Field(description="New start as an ISO 8601 string, e.g. 2026-11-13T23:59:00-05:00.")] = None,
+    end_time: Annotated[str | None, Field(description="New end (exclusive) as an ISO 8601 string. If omitted, the end moves with the start so the duration is kept.")] = None,
+    time_zone: Annotated[str | None, Field(description="IANA time zone for the new start/end.")] = None,
+    all_day: Annotated[bool | None, Field(description="Set to true to make the event all-day (start_time/end_time must then be midnight UTC).")] = None,
     calendar_id: Annotated[str | None, Field(description="Calendar ID that located the event. Omit for the primary calendar.")] = None,
 ) -> dict[str, Any]:
     """Update an existing Google Calendar event. Only provided fields are changed."""
@@ -137,10 +145,14 @@ async def calendar_update_event(
         arguments["summary"] = summary
     if description is not None:
         arguments["description"] = description
-    if start:
-        arguments["start"] = start
-    if end:
-        arguments["end"] = end
+    if start_time:
+        arguments["startTime"] = start_time
+    if end_time:
+        arguments["endTime"] = end_time
+    if time_zone:
+        arguments["timeZone"] = time_zone
+    if all_day is not None:
+        arguments["allDay"] = all_day
     if calendar_id:
         arguments["calendarId"] = calendar_id
     return await call_google_calendar("update_event", arguments)

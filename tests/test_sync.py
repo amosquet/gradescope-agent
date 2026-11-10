@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sync import event_time, plan_events
+import asyncio
+
+from sync import desired_start_key, event_time, existing_start_key, plan_events
 
 
 def _course(course_id, short, name, assignments):
@@ -39,9 +41,9 @@ def test_plan_events_due_and_late():
         "[GS] ECE 302 - HW 9 (due)",
     ]
     due = events[0]
-    assert due["start"]["dateTime"] == "2026-11-13T23:59:00-05:00"
-    assert due["start"]["timeZone"] == "America/Indiana/Indianapolis"
-    assert due["end"]["dateTime"] == "2026-11-14T00:59:00-05:00"
+    assert due["times"]["startTime"] == "2026-11-13T23:59:00-05:00"
+    assert due["times"]["timeZone"] == "America/Indiana/Indianapolis"
+    assert due["times"]["endTime"] == "2026-11-14T00:59:00-05:00"
     assert "https://www.gradescope.com/courses/1/assignments/10" in due["description"]
 
 
@@ -58,14 +60,33 @@ def test_plan_events_skips_closed_and_same_late():
 
 
 def test_event_time_all_day_and_naive():
-    start, end = event_time("2026-11-13", "America/Indiana/Indianapolis")
-    assert start == {"date": "2026-11-13"}
-    assert end == {"date": "2026-11-14"}
-    start, end = event_time("2026-11-13T23:59:00", "America/Indiana/Indianapolis")
-    assert start["dateTime"] == "2026-11-13T23:59:00"
-    assert start["timeZone"] == "America/Indiana/Indianapolis"
-    assert end["dateTime"] == "2026-11-14T00:59:00"
+    # date-only -> all-day, midnight UTC (connector requirement for allDay)
+    assert event_time("2026-11-13", "America/Indiana/Indianapolis") == {
+        "allDay": True,
+        "startTime": "2026-11-13T00:00:00Z",
+        "endTime": "2026-11-14T00:00:00Z",
+    }
+    # naive timestamp -> flat strings + timeZone
+    naive = event_time("2026-11-13T23:59:00", "America/Indiana/Indianapolis")
+    assert naive == {
+        "startTime": "2026-11-13T23:59:00",
+        "endTime": "2026-11-14T00:59:00",
+        "timeZone": "America/Indiana/Indianapolis",
+    }
+    # offset-aware timestamp
+    offset = event_time("2026-11-13T23:59:00-05:00", None)
+    assert offset == {"startTime": "2026-11-13T23:59:00-05:00", "endTime": "2026-11-14T00:59:00-05:00"}
     assert event_time(None, None) is None
+
+
+def test_start_key_matches_google_event_shape():
+    # naive planned time in the calendar tz must equal the stored offset form
+    times = event_time("2026-11-13T23:59:00", "America/Indiana/Indianapolis")
+    existing = {"start": {"dateTime": "2026-11-13T23:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"}}
+    assert desired_start_key(times, "America/Indiana/Indianapolis") == existing_start_key(existing)
+    # all-day planned event must equal the stored date form
+    allday = event_time("2026-11-13", None)
+    assert desired_start_key(allday, None) == existing_start_key({"start": {"date": "2026-11-13"}}) == "2026-11-13"
 
 
 def test_pick_primary_calendar():
@@ -80,3 +101,101 @@ def test_pick_primary_calendar():
     flagged = [{"id": "x@group.calendar.google.com", "primary": True}, {"id": "a@b.com"}]
     assert pick_primary_calendar(flagged)["id"] == "x@group.calendar.google.com"
     assert pick_primary_calendar([]) is None
+
+
+def test_sync_sends_connector_shaped_create_args(monkeypatch):
+    """Regression: the google_calendar connector's create_event/update_event take
+    flat startTime/endTime strings, not nested start/end objects."""
+    import sync
+
+    courses = [{"id": "1", "short_name": "CS 251", "name": "CS 25100", "term": "Fall 2026", "role": "student", "url": "/courses/1"}]
+    assignments = [
+        _assignment("10", "HW 8", "2026-11-13T23:59:00-05:00", "2026-11-14T08:59:00-05:00"),
+        _assignment("11", "HW 9", "2026-11-25"),
+    ]
+
+    async def fake_courses():
+        return courses
+
+    async def fake_assignments(course_id):
+        assert course_id == "1"
+        return assignments
+
+    calls = []
+
+    async def fake_gcal(tool_name, arguments):
+        calls.append((tool_name, dict(arguments)))
+        if tool_name == "list_calendars":
+            return {"calendars": [{"id": "me@example.com", "summary": "me", "timeZone": "America/Indiana/Indianapolis", "primary": True}]}
+        if tool_name == "list_events":
+            return {"events": []}
+        if tool_name == "create_event":
+            return {"id": f"evt-{len(calls)}", "htmlLink": "https://calendar.google.com/x", "start": {"dateTime": arguments.get("startTime")}}
+        raise AssertionError(f"unexpected tool {tool_name}")
+
+    monkeypatch.setattr(sync, "list_current_student_courses", fake_courses)
+    monkeypatch.setattr(sync, "fetch_course_assignments", fake_assignments)
+    monkeypatch.setattr(sync, "call_google_calendar", fake_gcal)
+
+    summary = asyncio.run(sync.sync_homework_to_calendar())
+
+    creates = [args for name, args in calls if name == "create_event"]
+    assert len(creates) == 3  # HW 8 due + LATE, HW 9 all-day due
+    assert not summary["errors"]
+    assert len(summary["events_created"]) == 3
+    for args in creates:
+        assert isinstance(args["startTime"], str) and isinstance(args["endTime"], str)
+        assert "start" not in args and "end" not in args
+        assert args["calendarId"] == "me@example.com"
+    by_title = {args["summary"]: args for args in creates}
+    assert by_title["[GS] CS 251 - HW 8 (due)"]["startTime"] == "2026-11-13T23:59:00-05:00"
+    assert by_title["[GS] CS 251 - HW 8 (due)"]["timeZone"] == "America/Indiana/Indianapolis"
+    allday = by_title["[GS] CS 251 - HW 9 (due)"]
+    assert allday["allDay"] is True
+    assert allday["startTime"] == "2026-11-25T00:00:00Z"
+    assert allday["endTime"] == "2026-11-26T00:00:00Z"
+
+
+def test_sync_updates_instead_of_recreating(monkeypatch):
+    """An existing [GS] event with the same instant (offset form) is skipped;
+    a changed one is updated with flat time args."""
+    import sync
+
+    courses = [{"id": "1", "short_name": "CS 251", "name": "CS 25100", "role": "student", "url": "/courses/1"}]
+    assignments = [_assignment("10", "HW 8", "2026-11-13T23:59:00")]  # naive, calendar tz
+
+    async def fake_courses():
+        return courses
+
+    async def fake_assignments(course_id):
+        return assignments
+
+    existing = {
+        "id": "evt-existing",
+        "summary": "[GS] CS 251 - HW 8 (due)",
+        "description": "old",
+        "start": {"dateTime": "2026-11-13T23:59:00-05:00", "timeZone": "America/Indiana/Indianapolis"},
+    }
+    calls = []
+
+    async def fake_gcal(tool_name, arguments):
+        calls.append((tool_name, dict(arguments)))
+        if tool_name == "list_calendars":
+            return {"calendars": [{"id": "me@example.com", "summary": "me", "timeZone": "America/Indiana/Indianapolis", "primary": True}]}
+        if tool_name == "list_events":
+            return {"events": [existing]}
+        return {}
+
+    monkeypatch.setattr(sync, "list_current_student_courses", fake_courses)
+    monkeypatch.setattr(sync, "fetch_course_assignments", fake_assignments)
+    monkeypatch.setattr(sync, "call_google_calendar", fake_gcal)
+
+    summary = asyncio.run(sync.sync_homework_to_calendar())
+    updates = [args for name, args in calls if name == "update_event"]
+    creates = [args for name, args in calls if name == "create_event"]
+    assert not creates
+    assert len(updates) == 1  # description differs -> update, same instant
+    assert updates[0]["eventId"] == "evt-existing"
+    assert updates[0]["startTime"] == "2026-11-13T23:59:00"
+    assert updates[0]["endTime"] == "2026-11-14T00:59:00"
+    assert summary["events_updated"] == ["[GS] CS 251 - HW 8 (due)"]

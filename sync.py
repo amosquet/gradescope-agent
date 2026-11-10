@@ -6,13 +6,15 @@ plain HTTP calls, instead of one model call per calendar event.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from gcal import call_google_calendar
 from gradescope_client import (
     GradescopeError,
-    list_course_assignments,
+    fetch_course_assignments,
     list_current_student_courses,
 )
 
@@ -46,10 +48,13 @@ def event_title(short_name: str | None, course_name: str | None, assignment_name
 
 
 def event_description(course_name: str | None, assignment: dict[str, Any]) -> str:
+    url = assignment["url"]
+    if url.startswith("/"):
+        url = f"https://www.gradescope.com{url}"
     lines = [
         f"Course: {course_name or assignment.get('course_name') or ''}".rstrip(),
         f"Assignment: {assignment['name']}",
-        f"Link: https://www.gradescope.com{assignment['url']}",
+        f"Link: {url}",
         f"Deadline status: {assignment.get('deadline_status')}",
         f"Submission: {assignment.get('submission_status')}",
     ]
@@ -60,26 +65,51 @@ def event_description(course_name: str | None, assignment: dict[str, Any]) -> st
     return "\n".join(lines)
 
 
-def event_time(iso: str | None, time_zone: str | None) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Build (start, end) for a due timestamp; 1h duration, all-day if date-only."""
+def event_time(iso: str | None, time_zone: str | None) -> dict[str, Any] | None:
+    """Connector-shaped time arguments for a due timestamp: flat startTime/
+    endTime ISO strings with a 1h duration; all-day (midnight UTC) if date-only.
+
+    The google_calendar connector's create_event/update_event take top-level
+    startTime/endTime strings (plus optional timeZone / allDay), not Google's
+    nested {dateTime|date, timeZone} start/end objects.
+    """
     if not iso:
         return None
-    start: dict[str, Any] = {}
     if "T" in iso:
-        if any(iso.endswith(suffix) for suffix in ("Z",)) or "+" in iso[10:] or "-" in iso[10:]:
-            start["dateTime"] = iso
-        else:
-            start["dateTime"] = iso  # naive: interpreted in timeZone below
-        if time_zone:
-            start["timeZone"] = time_zone
         begin = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        end_dt = begin + timedelta(hours=1)
-        end = dict(start)
-        end["dateTime"] = end_dt.isoformat()
-    else:
-        start["date"] = iso
-        end = {"date": (datetime.fromisoformat(iso) + timedelta(days=1)).date().isoformat()}
-    return start, end
+        times: dict[str, Any] = {"startTime": iso, "endTime": (begin + timedelta(hours=1)).isoformat()}
+        if time_zone:
+            times["timeZone"] = time_zone
+        return times
+    day = datetime.fromisoformat(iso).date()
+    return {
+        "allDay": True,
+        "startTime": f"{day.isoformat()}T00:00:00Z",
+        "endTime": f"{(day + timedelta(days=1)).isoformat()}T00:00:00Z",
+    }
+
+
+def _parse_instant(value: str, time_zone: str | None) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(time_zone) if time_zone else timezone.utc)
+    return parsed
+
+
+def desired_start_key(times: dict[str, Any], time_zone: str | None) -> str:
+    """Comparable key for a planned event's start: UTC instant, or the date for all-day."""
+    if times.get("allDay"):
+        return times["startTime"][:10]
+    return _parse_instant(times["startTime"], time_zone or times.get("timeZone")).astimezone(timezone.utc).isoformat()
+
+
+def existing_start_key(event: dict[str, Any]) -> str | None:
+    """Comparable key for an existing event's start, from the Google event resource shape."""
+    start = event.get("start") or {}
+    date_time = start.get("dateTime")
+    if date_time:
+        return _parse_instant(date_time, start.get("timeZone") or start.get("eventTimeZone")).astimezone(timezone.utc).isoformat()
+    return start.get("date")
 
 
 def plan_events(assignments_by_course: list[dict[str, Any]], time_zone: str | None) -> list[dict[str, Any]]:
@@ -99,12 +129,11 @@ def plan_events(assignments_by_course: list[dict[str, Any]], time_zone: str | No
                 times = event_time(assignment.get(iso_key), time_zone)
                 if times is None:
                     continue
-                start, end = times
                 desired.append(
                     {
                         "summary": event_title(short, name, assignment["name"], kind),
-                        "start": start,
-                        "end": end,
+                        "times": times,
+                        "start_key": desired_start_key(times, time_zone),
                         "description": event_description(name, assignment),
                         "assignment_id": assignment["id"],
                     }
@@ -146,10 +175,13 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
     time_zone = primary.get("timeZone")
 
     courses = await list_current_student_courses()
-    assignments_by_course = []
-    for course in courses:
-        assignments = await list_course_assignments(course["id"])
-        assignments_by_course.append({**course, "assignments": assignments})
+
+    async def with_assignments(course: dict[str, Any]) -> dict[str, Any]:
+        # Courses already came from the student course list, so skip the
+        # per-course /account re-validation (one throttled request each).
+        return {**course, "assignments": await fetch_course_assignments(course["id"])}
+
+    assignments_by_course = list(await asyncio.gather(*(with_assignments(course) for course in courses)))
 
     desired = plan_events(assignments_by_course, time_zone)
     now = datetime.now().astimezone()
@@ -173,8 +205,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
                         "calendarId": calendar_id,
                         "summary": title,
                         "description": event["description"],
-                        "start": event["start"],
-                        "end": event["end"],
+                        **event["times"],
                     },
                 )
                 created.append(
@@ -186,11 +217,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
                     }
                 )
             else:
-                changed = (
-                    (match.get("start") or {}).get("dateTime") != (event["start"].get("dateTime"))
-                    or (match.get("start") or {}).get("date") != event["start"].get("date")
-                    or (match.get("description") or "") != event["description"]
-                )
+                changed = existing_start_key(match) != event["start_key"] or (match.get("description") or "") != event["description"]
                 if changed:
                     await call_google_calendar(
                         "update_event",
@@ -199,8 +226,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
                             "eventId": match["id"],
                             "summary": title,
                             "description": event["description"],
-                            "start": event["start"],
-                            "end": event["end"],
+                            **event["times"],
                         },
                     )
                     updated.append(title)

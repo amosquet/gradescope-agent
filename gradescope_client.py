@@ -235,10 +235,21 @@ async def require_student_course(course_id: str) -> dict[str, Any]:
     raise GradescopeError(f"Course {course_id} is not available under the logged-in account's Student Courses")
 
 
-async def list_course_assignments(course_id: str) -> list[dict[str, Any]]:
-    await require_student_course(course_id)
+async def fetch_course_assignments(course_id: str) -> list[dict[str, Any]]:
+    """Assignments for a course already known to be one of the student's courses.
+
+    Skips the /account re-validation that require_student_course performs, so
+    bulk scans don't pay one extra throttled request per course.
+    """
+    if not re.fullmatch(r"\d+", course_id):
+        raise GradescopeError("course_id must be numeric")
     client = await get_client()
     return parse_assignment_list(await client.fetch_page(f"/courses/{course_id}"), course_id)
+
+
+async def list_course_assignments(course_id: str) -> list[dict[str, Any]]:
+    await require_student_course(course_id)
+    return await fetch_course_assignments(course_id)
 
 
 async def list_assignment_submissions(course_id: str, assignment_id: str) -> list[dict[str, Any]]:
