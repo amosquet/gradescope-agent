@@ -3,7 +3,7 @@
 Reads the user's Gradescope account (read-only, same surface as
 bruglet/gradescope-mcp) and syncs homework deadlines to Google Calendar
 through the google_calendar connector. Deployed as a Mistral-managed
-deployment; GRADESCOPE_EMAIL / GRADESCOPE_PASSWORD come from workspace
+deployment; gradescope_email / gradescope_password come from workspace
 secrets bound at deploy time.
 """
 
@@ -26,7 +26,7 @@ from gradescope_client import (
 
 INSTRUCTIONS = """You are a homework assistant. You read the user's Gradescope account (read-only) and sync homework assignments to their Google Calendar.
 
-Gradescope tools (read-only, called as client.*): list_courses, list_assignments, list_submissions, get_submission, list_regrade_requests. Credentials come from the GRADESCOPE_EMAIL / GRADESCOPE_PASSWORD environment variables (managed secrets); never ask the user for them and never print them. Never modify anything in Gradescope.
+Gradescope tools (read-only, called as client.*): list_courses, list_assignments, list_submissions, get_submission, list_regrade_requests. Credentials come from the gradescope_email / gradescope_password environment variables (managed secrets); never ask the user for them and never print them. Never modify anything in Gradescope.
 
 Calendar tools come from the google_calendar connector (connector_google_calendar.*): list_calendars, list_events, get_event, create_event, update_event, delete_event.
 
@@ -130,8 +130,8 @@ agent = agents.Agent(
     tools=[list_courses, list_assignments, list_submissions, get_submission, list_regrade_requests],
     connectors=[google_calendar],
     secrets={
-        "GRADESCOPE_EMAIL": agents.MistralSecret.workspace("gradescope_email", worker_env=True),
-        "GRADESCOPE_PASSWORD": agents.MistralSecret.workspace("gradescope_password", worker_env=True),
+        "gradescope_email": agents.MistralSecret.workspace("gradescope_email", worker_env=True),
+        "gradescope_password": agents.MistralSecret.workspace("gradescope_password", worker_env=True),
     },
 )
 

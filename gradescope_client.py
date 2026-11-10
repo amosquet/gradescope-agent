@@ -205,11 +205,11 @@ async def get_client() -> GradescopeClient:
     global _client
     async with _client_lock:
         if _client is None:
-            email = os.environ.get("GRADESCOPE_EMAIL", "").strip()
-            password = os.environ.get("GRADESCOPE_PASSWORD", "")
+            email = (os.environ.get("gradescope_email") or os.environ.get("GRADESCOPE_EMAIL") or "").strip()
+            password = os.environ.get("gradescope_password") or os.environ.get("GRADESCOPE_PASSWORD") or ""
             if not email or not password:
                 raise GradescopeError(
-                    "GRADESCOPE_EMAIL / GRADESCOPE_PASSWORD are not configured for this deployment"
+                    "gradescope_email / gradescope_password are not configured for this deployment"
                 )
             _client = GradescopeClient(email, password)
         return _client
