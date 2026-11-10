@@ -1,0 +1,146 @@
+"""Google Calendar access for the agent.
+
+The managed worker runs as the deployment's service account, which cannot use
+user-scope OAuth connector credentials. Instead, the worker holds a workspace
+secret containing a Mistral API key of the connector's owner and calls the
+connectors API (`POST /v1/connectors/google_calendar/tools/<tool>/call`) as
+that user, pinned to the `homework-sync` credential. The key never enters the
+session or the logs; it is read from the environment at call time.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Annotated, Any
+
+import httpx
+from pydantic import Field
+
+CONNECTORS_API = "https://api.mistral.ai/v1/connectors"
+GOOGLE_CALENDAR = "google_calendar"
+CREDENTIALS_NAME = "homework-sync"
+
+
+class CalendarError(Exception):
+    pass
+
+
+async def call_google_calendar(tool_name: str, arguments: dict[str, Any]) -> Any:
+    api_key = (os.environ.get("mistral_calendar_api_key") or os.environ.get("MISTRAL_CALENDAR_API_KEY") or "").strip()
+    if not api_key:
+        raise CalendarError("mistral_calendar_api_key is not configured for this deployment")
+    url = f"{CONNECTORS_API}/{GOOGLE_CALENDAR}/tools/{tool_name}/call"
+    async with httpx.AsyncClient(timeout=60.0) as http:
+        response = await http.post(
+            url,
+            params={"credentials_name": CREDENTIALS_NAME},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"arguments": arguments},
+        )
+    if response.status_code != 200:
+        raise CalendarError(f"google_calendar {tool_name} failed: HTTP {response.status_code} {response.text[:300]}")
+    payload = response.json()
+    metadata = payload.get("metadata") or {}
+    if metadata.get("isError"):
+        text = _content_text(payload.get("content"))
+        raise CalendarError(f"google_calendar {tool_name} returned an error: {text[:500]}")
+    structured = metadata.get("structuredContent") or metadata.get("structured_content")
+    if structured is not None:
+        return structured
+    content = payload.get("content") or []
+    if content and content[0].get("type") == "text":
+        try:
+            return json.loads(content[0]["text"])
+        except (ValueError, TypeError):
+            return content[0]["text"]
+    return payload
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, list):
+        return " ".join(block.get("text", "") for block in content if isinstance(block, dict))
+    return str(content)
+
+
+async def calendar_list_calendars() -> dict[str, Any]:
+    """List the Google calendars available to the connected account, with each calendar's id, summary, and timeZone."""
+    return await call_google_calendar("list_calendars", {})
+
+
+async def calendar_list_events(
+    calendar_id: Annotated[str | None, Field(description="Exact calendar ID from calendar_list_calendars. Omit for the primary calendar.")] = None,
+    start_time: Annotated[str | None, Field(description="ISO 8601 lower bound (exclusive) for an event's end time, e.g. 2026-11-01T00:00:00-05:00.")] = None,
+    end_time: Annotated[str | None, Field(description="ISO 8601 upper bound (exclusive) for an event's start time.")] = None,
+    full_text: Annotated[str | None, Field(description="Free-form search across event title, description, location, and attendees, e.g. \"[GS]\".")] = None,
+    time_zone: Annotated[str | None, Field(description="IANA time zone used in the response, e.g. America/Indiana/Indianapolis.")] = None,
+    page_size: Annotated[int | None, Field(description="Max events per page, 1-250 (default 100).")] = None,
+    page_token: Annotated[str | None, Field(description="nextPageToken from a previous list_events call, to continue pagination.")] = None,
+) -> dict[str, Any]:
+    """List events in the Google Calendar within an optional time window, optionally filtered by full-text query. Returns the events array and nextPageToken when more pages exist."""
+    arguments: dict[str, Any] = {}
+    if calendar_id:
+        arguments["calendarId"] = calendar_id
+    if start_time:
+        arguments["startTime"] = start_time
+    if end_time:
+        arguments["endTime"] = end_time
+    if full_text:
+        arguments["fullText"] = full_text
+    if time_zone:
+        arguments["timeZone"] = time_zone
+    if page_size:
+        arguments["pageSize"] = page_size
+    if page_token:
+        arguments["pageToken"] = page_token
+    return await call_google_calendar("list_events", arguments)
+
+
+async def calendar_get_event(
+    event_id: Annotated[str, Field(description="Exact event id returned by list_events or create_event.")],
+    calendar_id: Annotated[str | None, Field(description="Calendar ID that located the event. Omit for the primary calendar.")] = None,
+) -> dict[str, Any]:
+    """Get one Google Calendar event by id."""
+    arguments: dict[str, Any] = {"eventId": event_id}
+    if calendar_id:
+        arguments["calendarId"] = calendar_id
+    return await call_google_calendar("get_event", arguments)
+
+
+async def calendar_create_event(
+    summary: Annotated[str, Field(description="Event title, e.g. \"[GS] CS 251 - HW5 (due)\".")],
+    start: Annotated[dict[str, Any], Field(description="Start: {\"dateTime\": ISO 8601 with offset, \"timeZone\": IANA name} or {\"date\": \"YYYY-MM-DD\"} for all-day.")],
+    end: Annotated[dict[str, Any], Field(description="End, same shape as start (exclusive).")],
+    description: Annotated[str | None, Field(description="Event description; include the Gradescope assignment URL.")] = None,
+    calendar_id: Annotated[str | None, Field(description="Exact calendar ID. Omit for the primary calendar.")] = None,
+) -> dict[str, Any]:
+    """Create a Google Calendar event."""
+    arguments: dict[str, Any] = {"summary": summary, "start": start, "end": end}
+    if description:
+        arguments["description"] = description
+    if calendar_id:
+        arguments["calendarId"] = calendar_id
+    return await call_google_calendar("create_event", arguments)
+
+
+async def calendar_update_event(
+    event_id: Annotated[str, Field(description="Exact event id to update.")],
+    summary: Annotated[str | None, Field(description="New title. Only fields provided are changed.")] = None,
+    description: Annotated[str | None, Field(description="New description.")] = None,
+    start: Annotated[dict[str, Any] | None, Field(description="New start: {\"dateTime\": ..., \"timeZone\": ...} or {\"date\": ...}.")] = None,
+    end: Annotated[dict[str, Any] | None, Field(description="New end, same shape as start.")] = None,
+    calendar_id: Annotated[str | None, Field(description="Calendar ID that located the event. Omit for the primary calendar.")] = None,
+) -> dict[str, Any]:
+    """Update an existing Google Calendar event. Only provided fields are changed."""
+    arguments: dict[str, Any] = {"eventId": event_id}
+    if summary:
+        arguments["summary"] = summary
+    if description is not None:
+        arguments["description"] = description
+    if start:
+        arguments["start"] = start
+    if end:
+        arguments["end"] = end
+    if calendar_id:
+        arguments["calendarId"] = calendar_id
+    return await call_google_calendar("update_event", arguments)

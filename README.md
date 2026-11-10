@@ -16,11 +16,13 @@ the `google_calendar` connector.
   `gradescope_courses.py`, `gradescope_assignments.py`,
   `gradescope_submissions.py`, `gradescope_detail.py`.
 - `main.py` defines the `gradescope-homework-sync` agent: five read-only
-  Gradescope tools, the `google_calendar` connector
-  (`run_as="deployment"`, `credentials_name="homework-sync"` so scheduled runs
-  work without a signed-in user), and two workspace secrets
-  (`gradescope_email`, `gradescope_password`) bound to
-  `GRADESCOPE_EMAIL` / `GRADESCOPE_PASSWORD`.
+  Gradescope tools plus five Google Calendar tools (`gcal.py`). Calendar writes
+  go through the connectors API
+  (`POST /v1/connectors/google_calendar/tools/<tool>/call?credentials_name=homework-sync`)
+  authenticated with a Mistral API key of the connector owner, because the
+  deployment's service account cannot use user-scope OAuth credentials. Three
+  workspace secrets are bound at deploy time: `gradescope_email`,
+  `gradescope_password`, `mistral_calendar_api_key`.
 - Sync behavior: for every released assignment with a due date, one event
   `[GS] <course> - <assignment> (due)` at the due time (all-day if timeless),
   plus a `(LATE deadline)` event when a distinct late deadline exists.
@@ -31,11 +33,15 @@ the `google_calendar` connector.
 
 The managed deployment builds this repo's `Dockerfile` from the pushed commit:
 
-- Studio → Secrets Manager: create `gradescope_email` and `gradescope_password`.
-- Studio → Connectors → Google Calendar → Credentials: a workspace-shared
-  connection named `homework-sync`.
-- Deploy with the Mistral MCP `deploy_workflow_deployment` (or
-  `uv run --env-file .env agents deploy`), binding the two secrets.
+- Studio → Secrets Manager: create `gradescope_email`, `gradescope_password`,
+  and `mistral_calendar_api_key` (a Mistral API key of the account that owns
+  the `homework-sync` Google Calendar connection; connector access scope
+  "Private and shared connectors").
+- Studio → Connectors → Google Calendar → Credentials: a user connection named
+  `homework-sync`.
+- Deployment → Settings tab: bind the three secrets to env vars of the same
+  name, then deploy with the Mistral MCP `deploy_workflow_deployment` (or
+  `uv run --env-file .env agents deploy`).
 - A workflow schedule runs it daily at 08:00 America/Indiana/Indianapolis.
 
 ## Interact
