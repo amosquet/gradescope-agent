@@ -113,6 +113,8 @@ def plan_events(assignments_by_course: list[dict[str, Any]], time_zone: str | No
 
 
 async def list_existing_gs_events(calendar_id: str | None, window_start: str, window_end: str, time_zone: str | None) -> list[dict[str, Any]]:
+    # NB: the connector's fullText filter is unreliable, so list the window and
+    # filter by the "[GS]" title prefix client-side.
     events: list[dict[str, Any]] = []
     page_token: str | None = None
     while True:
@@ -122,13 +124,12 @@ async def list_existing_gs_events(calendar_id: str | None, window_start: str, wi
                 **({"calendarId": calendar_id} if calendar_id else {}),
                 "startTime": window_start,
                 "endTime": window_end,
-                "fullText": EVENT_PREFIX,
                 "pageSize": 250,
                 **({"pageToken": page_token} if page_token else {}),
                 **({"timeZone": time_zone} if time_zone else {}),
             },
         )
-        events.extend(page.get("events") or [])
+        events.extend(e for e in (page.get("events") or []) if (e.get("summary") or "").startswith(EVENT_PREFIX))
         page_token = page.get("nextPageToken")
         if not page_token:
             return events
@@ -203,6 +204,8 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
 
     return {
         "calendar": primary.get("summary") or calendar_id,
+        "calendar_id": calendar_id,
+        "existing_gs_events": sorted(existing_by_title.keys()),
         "courses_scanned": [c.get("short_name") or c.get("name") for c in assignments_by_course],
         "assignments_upcoming": sum(
             1 for c in assignments_by_course for a in c["assignments"] if a.get("deadline_status") in UPCOMING_STATUSES
