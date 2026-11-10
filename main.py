@@ -37,6 +37,7 @@ from gradescope_client import (
     list_current_student_courses,
     list_student_courses,
 )
+from sync import sync_homework_to_calendar as _sync_homework_to_calendar
 
 INSTRUCTIONS = """You are a homework assistant. You read the user's Gradescope account (read-only) and sync homework assignments to their Google Calendar.
 
@@ -44,16 +45,7 @@ Gradescope tools (read-only, called as client.*): list_courses, list_assignments
 
 Calendar tools (called as client.calendar_*): calendar_list_calendars, calendar_list_events, calendar_get_event, calendar_create_event, calendar_update_event. They write to the primary Google Calendar unless a calendar_id is given. Time fields use {\"dateTime\": ISO 8601 with offset, \"timeZone\": IANA name} or {\"date\": \"YYYY-MM-DD\"} for all-day events.
 
-MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run):
-1. Call calendar_list_calendars and use the primary calendar unless the user names another; note its timeZone.
-2. Call list_assignments with no course_id to get every UPCOMING assignment in every CURRENT-TERM course (past terms and closed/past-deadline assignments are excluded automatically) — due dates, late due dates, deadline status, submission status, scores, URLs.
-3. For each released assignment with a due date, ensure a calendar event exists:
-   - Title: "[GS] {course short name} - {assignment name} (due)"
-   - Start: the regular due date/time expressed in the calendar's timeZone (use due_date_iso when it carries an offset; if it is naive, treat it as calendar-local). Duration 1 hour. If the due date has no time component, create an all-day event on that date instead.
-   - Description: the assignment URL, course name, deadline_status, submission_status, score if any, and the late due date if it differs from the due date.
-   - If a late due date exists and differs from the due date, also ensure a second event titled "[GS] {course short name} - {assignment name} (LATE deadline)" at the late due time.
-4. Idempotency: before creating anything, call calendar_list_events on the target calendar with full_text "[GS]" and a start_time/end_time window wide enough to cover all assignment due dates (paginate with page_token if needed). Match existing events by exact summary (title). If an event with the same title exists, call calendar_update_event only when the start time or description actually changed; otherwise skip. Never delete events unless the user explicitly asks.
-5. Assignments without a due date are skipped; the all-courses list_assignments call already returns only upcoming assignments (closed/past deadlines are dropped), so only upcoming homework gets events. End with a concise summary: courses scanned, assignments found, events created / updated / skipped, and any errors encountered.
+MAIN TASK — "sync homework to calendar" (run when the user asks to sync, or on a scheduled run): call sync_homework_to_calendar ONCE and report its summary. It fetches upcoming assignments from all current-term courses and upserts "[GS] <course> - <name> (due)" events (plus "(LATE deadline)" when a distinct late deadline exists) on the primary calendar at the due time in the calendar's time zone, 1h duration, description with the Gradescope link and status. It is idempotent: matches existing [GS] events by exact title, updates only on change, never deletes. Only use the individual list_assignments / calendar_* tools for ad-hoc questions (e.g. "what's due", "list my events"), not for syncing.
 
 When the user asks about courses, deadlines, submissions, scores, or regrade requests, answer from the Gradescope tools and cite assignment URLs. Keep answers short. Never invent data: if a tool returns null or "unknown", say so.
 """
@@ -141,6 +133,12 @@ async def list_regrade_requests(
 
 
 @agents.tool
+async def sync_homework_to_calendar() -> dict:
+    """Full sync in one call: fetches upcoming assignments from all current-term Gradescope courses and upserts [GS] events on the primary Google Calendar (idempotent, never deletes). Returns a summary with created/updated/skipped events. Call THIS for any 'sync homework' request."""
+    return await _run(_sync_homework_to_calendar())
+
+
+@agents.tool
 async def calendar_list_calendars() -> dict:
     """List the Google calendars available to the connected account, with each calendar's id, summary, and timeZone. Call this first to resolve the target calendar and its time zone."""
     return await _run(_calendar_list_calendars())
@@ -199,6 +197,7 @@ agent = agents.Agent(
     description="Reads Gradescope homework assignments (read-only) and syncs deadlines to Google Calendar.",
     instructions=INSTRUCTIONS,
     tools=[
+        sync_homework_to_calendar,
         list_courses,
         list_assignments,
         list_submissions,
