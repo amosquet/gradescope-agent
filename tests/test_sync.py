@@ -66,3 +66,17 @@ def test_event_time_all_day_and_naive():
     assert start["timeZone"] == "America/Indiana/Indianapolis"
     assert end["dateTime"] == "2026-11-14T00:59:00"
     assert event_time(None, None) is None
+
+
+def test_pick_primary_calendar():
+    from sync import pick_primary_calendar
+
+    calendars = [
+        {"id": "3trlb35csvqrpd0og6rca5ibgo@group.calendar.google.com", "summary": "TrollClan Events"},
+        {"id": "me@example.com", "summary": "me@example.com"},
+        {"id": "en.french#holiday@group.v.calendar.google.com", "summary": "Holidays"},
+    ]
+    assert pick_primary_calendar(calendars)["id"] == "me@example.com"
+    flagged = [{"id": "x@group.calendar.google.com", "primary": True}, {"id": "a@b.com"}]
+    assert pick_primary_calendar(flagged)["id"] == "x@group.calendar.google.com"
+    assert pick_primary_calendar([]) is None

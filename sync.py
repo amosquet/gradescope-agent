@@ -20,6 +20,26 @@ EVENT_PREFIX = "[GS]"
 UPCOMING_STATUSES = ("before_due", "accepting_late")
 
 
+GROUP_CALENDAR_SUFFIXES = (
+    "@group.calendar.google.com",
+    "@import.calendar.google.com",
+    "@v.calendar.google.com",
+)
+
+
+def pick_primary_calendar(calendar_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The account's own primary calendar: flagged primary, else the first
+    non-group calendar whose id is an email address."""
+    for calendar in calendar_list:
+        if calendar.get("primary"):
+            return calendar
+    for calendar in calendar_list:
+        calendar_id = calendar.get("id") or ""
+        if "@" in calendar_id and not calendar_id.endswith(GROUP_CALENDAR_SUFFIXES):
+            return calendar
+    return calendar_list[0] if calendar_list else None
+
+
 def event_title(short_name: str | None, course_name: str | None, assignment_name: str, kind: str) -> str:
     course = short_name or course_name or "Gradescope"
     return f"{EVENT_PREFIX} {course} - {assignment_name} ({kind})"
@@ -118,7 +138,7 @@ async def sync_homework_to_calendar() -> dict[str, Any]:
     """Fetch upcoming Gradescope assignments (current-term courses) and sync [GS] events to the primary Google Calendar. Idempotent: matches by exact event title, updates only on change, never deletes."""
     calendars = await call_google_calendar("list_calendars", {})
     calendar_list = calendars.get("calendars") or []
-    primary = next((c for c in calendar_list if c.get("primary")), calendar_list[0] if calendar_list else None)
+    primary = pick_primary_calendar(calendar_list)
     if primary is None:
         raise GradescopeError("No Google Calendar found for the connected account")
     calendar_id = primary.get("id")
